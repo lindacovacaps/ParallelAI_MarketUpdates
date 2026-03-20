@@ -19,7 +19,7 @@ const CONFIG = {
   pollIntervalMinutes: 10,      // Must match your Trigger 2 interval (set during initialSetup)
 
   // Nightly trigger 
-  nightlyHour: 22,              // 24-hour format. 22 = 10:00 PM in your script's timezone
+  nightlyHour: 6,              // 24-hour format. 6 = 6am singapore time (script timezone)
 };
 
 
@@ -47,9 +47,6 @@ function startResearch() {
     return;
   }
 
-  // Guard: exit immediately on weekends and US market holidays
-  if (isUSMarketHoliday()) return;
-
   // Guard: don't start a new task if one is already in flight
   const existingRunId = props.getProperty(PROPS.runId);
   if (existingRunId) {
@@ -59,8 +56,10 @@ function startResearch() {
 
   console.log("Starting Parallel AI Deep Research task...");
 
+  const tradingDay = getLastTradingDay();
+
   const payload = {
-    input:     buildPrompt().trim(),
+    input:     buildPrompt(tradingDay).trim(),
     processor: CONFIG.processor,
     task_spec: {
       output_schema: {
@@ -112,19 +111,11 @@ function startResearch() {
 
 // weekends + US holidays
 
-function buildPrompt() {
-  const now = new Date();
+function buildPrompt(tradingDay) {
   const nyTz = "America/New_York";
+  const dateStr = Utilities.formatDate(tradingDay, nyTz, "d MMMM yyyy");
 
-  // prev cal date in NY
-  const nyTodayStr = Utilities.formatDate(now, nyTz, "yyyy-MM-dd");
-  const nyToday = new Date(nyTodayStr + "T12:00:00");
-  const nyYesterday = new Date(nyToday);
-  nyYesterday.setDate(nyToday.getDate()-1);
-
-  const dateStr = Utilities.formatDate(nyYesterday, nyTz, "d MMMM yyyy");
-
-  return `Create a report based on ${dateStr} USA close as per below instructions: ' + 'I want to create a morning summary for Asia Pacific Morning time for the overnight US markets, The target segment is professionals in the Fixed Income and Credit Markets. You can use reliable sources like Bloomberg, Reuters, IFR, CNBC, Investing.com. Saxo.com, Federal reserve bank etc. it should have a table at the bottom with data from S&P 500 index, US 10 Year treasury, Gold Spot (XAU/USD), Silver Spot (XAG/USD), OIl Price Spot (Brent Oil Price Spot) with closing price of US markets and change over previous close of the same market. It should start with a summary of market movements, followed by Main headlines on news around politics, important Economic data. Also add any corporate bond information from the day. IMPORTANT: Please note the following while creating the output: 1. Place EXTREMELY HIGH emphasis on accuracy 2. CRITICAL INSTRUCTION: Verify ALL the data in the table as in your previous research reports, the data was WRONG for S&P and Silver. 3. Remove the linkages from the report section and keep them only at the bottom of the output in case I want to cross check. 4. Make sure to follow below given format for report generation: a) Start with a Headline b) Then have an overall Summary, news on US Equities, Foreign Exchange Markets, Bonds, Commodities, Politics and Policy related. Should be around 100-150 words maximum. c) Then have a section on Market movement, other significant market movement on Foreign Exchange rates, Interest rates, Commodities, Credit spreads etc. d) Next section should be on Policy and Politics. This should include all the policy level important changes or any geo political events which were significant e) Next should be on major data releases and their variances from consensus estimates. f) Finally at the end of report include a table with S&P 500 index, US 10 Year treasury, Gold Spot (XAU/USD), Silver Spot (XAG/USD), OIl Price Spot (Brent Oil Price Spot) with closing price of US markets and change over previous close of the same market ( in case the previous calendar date was holiday, please compare with a day immediately before business day g) IMPORTANT POINTS TO KEEP IN MIND: (i) In the various sections in the report DO NOT include references to citations. (ii) Remove the table on specific equity share price movement - just the write-up without the table is sufficient (iii) Remove any recommendations after each section (in other words any "Takeaway") from the report. We want to present a factual situation as opposed to providing any recommendations.`
+  return `Create a report based on ${dateStr} USA close as per below instructions: I want to create a morning summary for Asia Pacific Morning time for the overnight US markets, The target segment is professionals in the Fixed Income and Credit Markets. You can use reliable sources like Bloomberg, Reuters, IFR, CNBC, Investing.com. Saxo.com, Federal reserve bank etc. it should have a table at the bottom with data from S&P 500 index, US 10 Year treasury, Gold Spot (XAU/USD), Silver Spot (XAG/USD), OIl Price Spot (Brent Oil Price Spot) with closing price of US markets and change over previous close of the same market. It should start with a summary of market movements, followed by Main headlines on news around politics, important Economic data. Also add any corporate bond information from the day. IMPORTANT: Please note the following while creating the output: 1. Place EXTREMELY HIGH emphasis on accuracy 2. CRITICAL INSTRUCTION: Verify ALL the data in the table as in your previous research reports, the data was WRONG for S&P and Silver. 3. Remove the linkages from the report section and keep them only at the bottom of the output in case I want to cross check. 4. Make sure to follow below given format for report generation: a) Start with a Headline b) Then have an overall Summary, news on US Equities, Foreign Exchange Markets, Bonds, Commodities, Politics and Policy related. Should be around 100-150 words maximum. c) Then have a section on Market movement, other significant market movement on Foreign Exchange rates, Interest rates, Commodities, Credit spreads etc. d) Next section should be on Policy and Politics. This should include all the policy level important changes or any geo political events which were significant e) Next should be on major data releases and their variances from consensus estimates. f) Finally at the end of report include a table with S&P 500 index, US 10 Year treasury, Gold Spot (XAU/USD), Silver Spot (XAG/USD), OIl Price Spot (Brent Oil Price Spot) with closing price of US markets and change over previous close of the same market ( in case the previous calendar date was holiday, please compare with a day immediately before business day g) IMPORTANT POINTS TO KEEP IN MIND: (i) In the various sections in the report DO NOT include references to citations. (ii) Remove the table on specific equity share price movement - just the write-up without the table is sufficient (iii) Remove any recommendations after each section (in other words any "Takeaway") from the report. We want to present a factual situation as opposed to providing any recommendations.`
 }
 
 // TRIGGER 2 — Poll for task completion
@@ -209,11 +200,20 @@ function pollResearch() {
     const reportContent = resultBody.output && resultBody.output.content;
     console.log("Report content length (chars): ", reportContent ? reportContent.length : 0);
 
+    // secondary cleanup pass 
+    let cleanedContent = reportContent;
+    if (reportContent && typeof reportContent === "string") {
+      cleanedContent = cleanWithChatAPI(apiKey, reportContent);
+    }
+
+    // rebuild output w cleaned content
+    const cleanedOutput = Object.assign({}, resultBody.output, {content: cleanedContent});
+
     const fullResult = {
       run_id:       resultBody.run_id || runId,
       processor:    resultBody.processor || CONFIG.processor,
       completed_at: resultBody.modified_at || null,
-      output:       resultBody.output,
+      output:       cleanedOutput,
       status:       "completed"
     };
 
@@ -253,6 +253,12 @@ function formatResearchOutput(body) {
     let cleaned = output.content
       // Strip inline citation numbers like [1], [2], [1][2], [1] [2]
       .replace(/(\[\d+\]\s*)+/g, "")
+
+      // (Backup to AI cleanWithChatAI) remove entire references section
+      .replace(/\n#{1,6}\s*(References|Citations|Sources)\s*\n[\s\S]*$/i, "")
+
+      // remove remaining pipe-delimited table blocks (ticker tables)
+      .replace(/(\|.+\|\n)+/g, "")
 
       // Major Headings
       .replace(/^#{1,2}\s+(.+)$/gm, "\n---------------\n*$1*")
@@ -510,49 +516,6 @@ function tempClear() {
   console.log("Cleared.");
 }
 
-function isUSMarketHoliday() {
-  const now = new Date();
-
-  // All US market date logic must reference New York time, not Singapore time.
-  // At 10 PM SGT, it is ~9 AM ET the same calendar day — so the last US
-  // market close was the previous calendar day in New York.
-  const nyTz = "America/New_York";
-
-  // Get yesterday's date in New York time
-  const nyTodayStr    = Utilities.formatDate(now, nyTz, "yyyy-MM-dd");
-  const nyToday       = new Date(nyTodayStr + "T12:00:00");
-  const nyYesterday   = new Date(nyToday);
-  nyYesterday.setDate(nyToday.getDate() - 1);
-
-  const day       = parseInt(Utilities.formatDate(nyYesterday, nyTz, "u")); // 1=Mon, 7=Sun
-  const monthDay  = Utilities.formatDate(nyYesterday, nyTz, "MM-dd");
-  const year      = parseInt(Utilities.formatDate(nyYesterday, nyTz, "yyyy"));
-  const dateStr   = Utilities.formatDate(nyYesterday, nyTz, "yyyy-MM-dd");
-
-  // Skip weekends
-  if (day === 6 || day === 7) {
-    console.log("Last NY trading day was a weekend (%s). Skipping.", dateStr);
-    return true;
-  }
-
-  // Fixed holidays
-  const fixedHolidays = ["01-01", "06-19", "07-04", "12-25"];
-  if (fixedHolidays.indexOf(monthDay) !== -1) {
-    console.log("Last NY trading day was a fixed US holiday (%s). Skipping.", monthDay);
-    return true;
-  }
-
-  // Floating holidays
-  const floatingHolidays = getFloatingHolidays(year);
-  if (floatingHolidays.indexOf(dateStr) !== -1) {
-    console.log("Last NY trading day was a floating US holiday (%s). Skipping.", dateStr);
-    return true;
-  }
-
-  return false;
-}
-
-
 function getFloatingHolidays(year) {
   const holidays = [];
 
@@ -563,7 +526,7 @@ function getFloatingHolidays(year) {
   holidays.push(getNthWeekdayOfMonth(year, 2, 1, 3));
 
   // Good Friday — 2 days before Easter (NYSE closes)
-  const easter    = getEasterDate(year);
+  const easter     = getEasterDate(year);
   const goodFriday = new Date(easter);
   goodFriday.setDate(easter.getDate() - 2);
   holidays.push(Utilities.formatDate(goodFriday, Session.getScriptTimeZone(), "yyyy-MM-dd"));
@@ -579,10 +542,10 @@ function getFloatingHolidays(year) {
 
   // Handle fixed holidays that fall on weekend — observe Friday or Monday
   const fixed = [
-    new Date(year, 0, 1),  // New Year's Day
-    new Date(year, 5, 19), // Juneteenth
-    new Date(year, 6, 4),  // Independence Day
-    new Date(year, 11, 25) // Christmas
+    new Date(year, 0, 1),   // New Year's Day
+    new Date(year, 5, 19),  // Juneteenth
+    new Date(year, 6, 4),   // Independence Day
+    new Date(year, 11, 25)  // Christmas
   ];
 
   fixed.forEach(function(date) {
@@ -601,6 +564,43 @@ function getFloatingHolidays(year) {
   });
 
   return holidays;
+}
+
+
+function getLastTradingDay() {
+  const nyTz = "America/New_York";
+  const now = new Date();
+
+  const nyTodayStr = Utilities.formatDate(now, nyTz, "yyyy-MM-dd");
+  let candidate = new Date(nyTodayStr + "T12:00:00");
+
+  for (let i=0; i<7; i++) {
+    const day       = parseInt(Utilities.formatDate(candidate, nyTz, "u"));
+    const monthDay  = Utilities.formatDate(candidate, nyTz, "MM-dd");
+    const year      = parseInt(Utilities.formatDate(candidate, nyTz, "yyyy"));
+    const dateStr   = Utilities.formatDate(candidate, nyTz, "yyyy-MM-dd");
+
+    const isWeekend = (day === 6 || day === 7);
+
+    const fixedHolidays = ["01-01", "06-19", "07-04", "12-25"];
+    const isFixedHoliday = fixedHolidays.indexOf(monthDay) !== -1;
+
+    const floatingHolidays = getFloatingHolidays(year);
+    const isFloatingHoliday = floatingHolidays.indexOf(dateStr) !== -1;
+
+    if (!isWeekend && !isFixedHoliday && !isFloatingHoliday) {
+      console.log("Last trading day resolved to: %s", dateStr);
+      return candidate // found a valid trading day
+    }
+
+    console.log("%s is not a trading day - stepping back one day.", dateStr);
+    candidate.setDate(candidate.getDate() -1);
+  }
+
+  // fallback 
+  console.error("could not resolve last trading day after 7 attempts, using current NY date.");
+  return new Date(nyTodayStr + "T12:00:00");
+
 }
 
 
@@ -648,3 +648,55 @@ function getEasterDate(year) {
   const day   = ((h + l - 7 * m + 114) % 31) + 1;
   return new Date(year, month - 1, day);
 }
+
+function cleanWithChatAPI(apiKey, rawContent) {
+  console.log("Running secondary cleanup pass via Chat API...");
+
+  const cleanupPrompt = 
+    "You are a financial report editor. You will be given a market research report in markdown format. " +
+    "Make ONLY the following two edits and return the full report with nothing else changed:\n" +
+    "1. Remove any table that lists individual company names, stock tickers, or share prices from the Market Movement section. Keep all surrounding prose.\n" +
+    "2. Remove the entire References or Citations section at the bottom of the report, including its heading. Also remove all inline citation markers such as [1], [2], [1][2] from the body text.\n" +
+    "Return only the cleaned report text with no commentary, no preamble, and no explanation.\n\n" +
+    "REPORT:\n" + rawContent;
+
+  const payload = {
+    model: "core",
+    messages: [{ role: "user", content: cleanupPrompt }],
+    stream: false
+  };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    headers: { "Authorization": "Bearer " + apiKey },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  let response;
+  try {
+    response = UrlFetchApp.fetch("https://api.parallel.ai/chat/completions", options);
+  } catch (e) {
+    console.error("Chat API network error: %s — using original content.", e.message);
+    return rawContent; // Fail gracefully, return original
+  }
+
+  const code = response.getResponseCode();
+  const body = safeParseJson(response.getContentText());
+
+  if (code !== 200 || !body || !body.choices || !body.choices[0]) {
+    console.error("Chat API returned HTTP %s — using original content.", code);
+    return rawContent; // Fail gracefully, return original
+  }
+
+  const cleaned = body.choices[0].message && body.choices[0].message.content;
+  if (!cleaned) {
+    console.error("Chat API returned empty content — using original.");
+    return rawContent;
+  }
+
+  console.log("Chat API cleanup complete. Length before: %s, after: %s", rawContent.length, cleaned.length);
+  return cleaned;
+}
+
